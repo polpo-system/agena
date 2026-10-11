@@ -1,13 +1,17 @@
 MODULE agena;  (** a Gemini server (gemini://, port 1965) over the TLS 1.3 of src/lib/tls *)
 
-(* agena.Serve dir cert.pem key.pem [port] [/host name] [/n count] [/queue n] [/timeout s]
-   agena.Serve /config file.toml [port] [/n count] [/queue n] [/timeout s]
+(* agena.Serve dir cert.pem key.pem [port] [/listen addr]... [/host name] [/n count] [/queue n] [/timeout s]
+   agena.Serve /config file.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]
    serves the files below dir, or those of several servers (virtual hosts) of a configuration
    file: each with its name, certificate, key, directory (root) and index file; the host name
    a client asks for in the handshake (SNI) chooses the server and its certificate, and the host
    of the URL must be that server's. Names may be written in UTF-8 (սոնա.հայ): they are compared
    as clients send them, in punycode (xn--y9a5bft.xn--y9a3aq). [types] of the file adds or
-   changes the types of extensions (mp3 = "audio/mpeg"). agena.Help shows an example. A request is a URL and CR LF; the answer a status line ("20
+   changes the types of extensions (mp3 = "audio/mpeg"). agena.Help shows an example.
+   It listens on every address, IPv4 and IPv6 (one IPv6 socket that also takes IPv4), or on
+   those of listen = [...] in the file or of /listen: an IPv4 or IPv6 address (in brackets when a
+   port follows), * for any, each with :port or the port of the server; the clients of all of
+   them are served one after the other. A request is a URL and CR LF; the answer a status line ("20
    text/gemini", "51 not found", ...) and, for 20, the file. A directory gives its index.gmi, or
    a list of its files when it has none; a directory named without a slash at the end is
    redirected (31) to the name with it. Names starting with a dot, and .. in a path, are not
@@ -29,6 +33,7 @@ CONST
   NameLen = 256;
   PathLen = 1024;
   MaxConfig = 65536;
+  MaxListen = 16;
 
 TYPE
   State = POINTER TO TLS13Live.State;  (* 300 KB: on the heap *)
@@ -47,7 +52,8 @@ TYPE
   Text = POINTER TO ARRAY MaxConfig OF CHAR;
 
 VAR
-  listener: Sockets.Socket;
+  listeners: ARRAY MaxListen OF Sockets.Socket; nListen: LONGINT;
+  specs: ARRAY MaxListen OF ARRAY 64 OF CHAR; nSpecs: LONGINT;  (* the addresses to listen on *)
   s: State;               (* the connection being served *)
   hosts: Host;            (* the servers, the first one for clients that name none *)
   current: Host;          (* the server of the connection *)
@@ -414,12 +420,6 @@ END Answer;
 
 (* ----- the server ----- *)
 
-PROCEDURE Close;
-BEGIN
-  IF (s # NIL) & s.connected THEN TLS13Live.Disconnect(s^) END;
-  IF listener # NIL THEN Sockets.Close(listener); listener := NIL END
-END Close;
-
 PROCEDURE Int(VAR a: ARRAY OF CHAR; VAR v: LONGINT): BOOLEAN;
 VAR i: LONGINT;
 BEGIN
@@ -428,34 +428,140 @@ BEGIN
   RETURN (i > 0) & (a[i] = 0X)
 END Int;
 
+PROCEDURE Close;
+BEGIN
+  IF (s # NIL) & s.connected THEN TLS13Live.Disconnect(s^) END;
+  WHILE nListen > 0 DO DEC(nListen); Sockets.Close(listeners[nListen]); listeners[nListen] := NIL END
+END Close;
+
+(** listen also on spec in the next Start or StartConfig of this loksh (agena.Serve: /listen, or
+  listen = [...] in the file): an IPv4 or IPv6 address, [IPv6]:port, IPv4:port, * or *:port *)
+PROCEDURE Listen*(spec: ARRAY OF CHAR);
+BEGIN
+  IF nSpecs < MaxListen THEN COPY(spec, specs[nSpecs]); INC(nSpecs) END
+END Listen;
+
+(* the address a and the port of spec; port: the default *)
+PROCEDURE ParseListen(VAR spec: ARRAY OF CHAR; VAR a: Sockets.Address; VAR port: LONGINT): BOOLEAN;
+VAR addr, num: ARRAY 64 OF CHAR; i, j, colons: LONGINT;
+BEGIN
+  i := 0; j := 0; num := "";
+  IF spec[0] = "[" THEN  (* [IPv6] or [IPv6]:port *)
+    i := 1; WHILE (spec[i] # 0X) & (spec[i] # "]") DO addr[j] := spec[i]; INC(i); INC(j) END;
+    addr[j] := 0X;
+    IF spec[i] # "]" THEN RETURN FALSE END;
+    INC(i);
+    IF spec[i] = ":" THEN COPY(spec, num); j := 0; INC(i); WHILE spec[i] # 0X DO num[j] := spec[i]; INC(i); INC(j) END; num[j] := 0X
+    ELSIF spec[i] # 0X THEN RETURN FALSE
+    END
+  ELSE
+    colons := 0; WHILE spec[i] # 0X DO IF spec[i] = ":" THEN INC(colons) END; INC(i) END;
+    COPY(spec, addr);
+    IF colons = 1 THEN  (* IPv4:port or *:port *)
+      i := 0; WHILE addr[i] # ":" DO INC(i) END;
+      addr[i] := 0X; INC(i); j := 0; WHILE spec[i] # 0X DO num[j] := spec[i]; INC(i); INC(j) END; num[j] := 0X
+    END
+  END;
+  IF num # "" THEN IF ~Int(num, port) OR (port < 1) OR (port > 65535) THEN RETURN FALSE END END;
+  IF addr = "*" THEN Sockets.AnyAddress(Sockets.Inet6, a); RETURN TRUE END;
+  RETURN Sockets.ParseAddress(addr, a)
+END ParseListen;
+
+(* "[a]:port" or "a:port" *)
+PROCEDURE ShowAddress(VAR a: Sockets.Address; port: LONGINT);
+VAR t: ARRAY 64 OF CHAR;
+BEGIN
+  Sockets.AddressToString(a, t);
+  IF a.family = Sockets.Inet6 THEN out.Char("["); out.String(t); out.Char("]") ELSE out.String(t) END;
+  out.Char(":"); out.Int(port, 0)
+END ShowAddress;
+
+(* the listening sockets of specs ("*" if none) on port; FALSE (and why) if one cannot be opened *)
+PROCEDURE OpenListeners(port, queue: LONGINT): BOOLEAN;
+VAR a: Sockets.Address; i, k, p: LONGINT; l: Sockets.Socket;
+BEGIN
+  IF nSpecs = 0 THEN Listen("*") END;
+  i := 0;
+  WHILE i < nSpecs DO
+    p := port;
+    IF ~ParseListen(specs[i], a, p) THEN
+      out.String("agena: not an address to listen on: "); out.String(specs[i]); out.Ln; Close; RETURN FALSE
+    END;
+    l := Sockets.ListenAt(a, p, queue);
+    IF l = NIL THEN
+      out.String("agena: cannot listen on "); ShowAddress(a, p);
+      IF Sockets.res = -98 THEN out.String(": in use (* takes IPv4 and IPv6 already)")
+      ELSIF Sockets.res = -99 THEN out.String(": not an address of this machine")
+      ELSIF Sockets.res = -13 THEN out.String(": not allowed (a port below 1024 needs root)")
+      ELSE out.String(", error "); out.Int(-Sockets.res, 0)
+      END;
+      out.Ln; Close; RETURN FALSE
+    END;
+    listeners[nListen] := l; INC(nListen);
+    out.String("agena: listening on "); ShowAddress(a, p);
+    IF a.family = Sockets.Inet6 THEN  (* the any address :: takes IPv4 too *)
+      k := 0; WHILE (k < 16) & (a.addr[k] = 0X) DO INC(k) END;
+      IF k = 16 THEN out.String(" (IPv4 and IPv6)") END
+    END;
+    out.Ln; INC(i)
+  END;
+  RETURN TRUE
+END OpenListeners;
+
+(* the next connection on any of the listening sockets; NIL after an error *)
+PROCEDURE NextConnection(VAR peer: Sockets.Address; VAR peerPort: LONGINT): Sockets.Socket;
+VAR set: ARRAY 128 OF CHAR; i, n, fd, r: LONGINT;
+BEGIN
+  IF nListen = 1 THEN RETURN Sockets.Accept(listeners[0], peer, peerPort) END;
+  i := 0; WHILE i < LEN(set) DO set[i] := 0X; INC(i) END;
+  n := 0; i := 0;
+  WHILE i < nListen DO
+    fd := listeners[i].fd;
+    IF (fd >= 0) & (fd < 1024) THEN set[fd DIV 8] := CHR(ORD(set[fd DIV 8]) + ASH(1, fd MOD 8)); IF fd >= n THEN n := fd + 1 END END;
+    INC(i)
+  END;
+  r := Linux0.Select0(n, SYSTEM.ADR(set[0]), 0, 0, 0);  (* waits without end *)
+  IF r <= 0 THEN RETURN NIL END;
+  i := 0;
+  WHILE i < nListen DO
+    fd := listeners[i].fd;
+    IF ODD(ASH(ORD(set[fd DIV 8]), -(fd MOD 8))) THEN RETURN Sockets.Accept(listeners[i], peer, peerPort) END;
+    INC(i)
+  END;
+  RETURN NIL
+END NextConnection;
+
 PROCEDURE Usage;
 BEGIN
-  out.String("usage: agena.Serve dir cert.pem key.pem [port] [/host name] [/n count] [/queue n] [/timeout s]"); out.Ln;
-  out.String("       agena.Serve /config file.toml [port] [/n count] [/queue n] [/timeout s]"); out.Ln;
+  out.String("usage: agena.Serve dir cert.pem key.pem [port] [/listen addr]... [/host name] [/n count] [/queue n] [/timeout s]"); out.Ln;
+  out.String("       agena.Serve /config file.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]"); out.Ln;
   out.String("  serves the files below dir over Gemini (port 1965); agena.Help tells more"); out.Ln
 END Usage;
 
 (* serves the servers of hosts on port: count connections (-1: without end) *)
 PROCEDURE Run(port, count, queue, secs: LONGINT);
-VAR url: ARRAY MaxRequest + 3 OF CHAR; served, peerPort, status: LONGINT;
-  c: Sockets.Socket; peer: Sockets.Address; addr: ARRAY 64 OF CHAR; h: Host;
+VAR url: ARRAY MaxRequest + 3 OF CHAR; served, peerPort, status, localPort: LONGINT;
+  c: Sockets.Socket; peer, local: Sockets.Address; addr: ARRAY 160 OF CHAR; t: ARRAY 64 OF CHAR; h: Host;
 BEGIN
   Close; Oberon.OnStop(Close);
   IF s = NIL THEN NEW(s); TLS13Live.Init(s^) END;
-  listener := Sockets.Listen(Sockets.Inet6, port, queue);
-  IF listener = NIL THEN out.String("agena: cannot listen on port "); out.Int(port, 0); out.Ln; RETURN END;
+  IF ~OpenListeners(port, queue) THEN nSpecs := 0; RETURN END;
+  nSpecs := 0;  (* /listen and Listen are for one run *)
   h := hosts;
   WHILE h # NIL DO
     out.String("agena: serving "); out.String(h.root);
     IF h.name[0] # 0X THEN out.String(" as "); out.String(h.name) END;
-    out.String(" on port "); out.Int(port, 0); out.Ln; h := h.next
+    out.Ln; h := h.next
   END;
   served := 0;
   WHILE served # count DO
-    c := Sockets.Accept(listener, peer, peerPort);
+    c := NextConnection(peer, peerPort);
     IF c # NIL THEN
       INC(served); url[0] := 0X; current := NIL;
       Sockets.AddressToString(peer, addr);
+      IF (nListen > 1) & Sockets.LocalAddress(c, local, localPort) THEN  (* the address it came to *)
+        Sockets.AddressToString(local, t); Append(addr, " > "); Append(addr, t)
+      END;
       Sockets.SetTimeout(c, secs * 1000);
       IF ~TLS13Server.AcceptBy(c.fd, Choose, s^) THEN
         out.String(addr); out.String(" handshake failed: "); out.String(TLS13Server.lastError);
@@ -514,7 +620,7 @@ END ReadFile;
 
 (* hosts, types, port, queue, secs := those of the configuration file; FALSE (and why) if it is wrong *)
 PROCEDURE Configure(VAR file: ARRAY OF CHAR; VAR port, queue, secs: LONGINT): BOOLEAN;
-VAR text: Text; doc: TOML.Doc; sec: TOML.Section; f: TOML.Field; t, q: Type; v: LONGINT;
+VAR text: Text; doc: TOML.Doc; sec: TOML.Section; f: TOML.Field; it: TOML.Item; t, q: Type; v: LONGINT;
   name, root, index, cert, key: ARRAY PathLen OF CHAR; k: ARRAY 16 OF CHAR;
 BEGIN
   hosts := NIL; types := NIL; byName := TRUE;
@@ -529,7 +635,13 @@ BEGIN
   IF sec # NIL THEN
     k := "port"; IF TOML.GetField(sec, k, name) & Int(name, v) THEN port := v END;
     k := "queue"; IF TOML.GetField(sec, k, name) & Int(name, v) & (v > 0) THEN queue := v END;
-    k := "timeout"; IF TOML.GetField(sec, k, name) & Int(name, v) THEN secs := v END
+    k := "timeout"; IF TOML.GetField(sec, k, name) & Int(name, v) THEN secs := v END;
+    k := "listen"; f := TOML.Find(sec, k);
+    IF (f # NIL) & (nSpecs = 0) THEN  (* /listen of the command line wins *)
+      IF f.kind = TOML.Array THEN it := f.items; WHILE it # NIL DO Listen(it.value); it := it.next END
+      ELSE Listen(f.value)
+      END
+    END
   END;
   k := "server"; sec := TOML.GetSection(doc, k);
   IF sec = NIL THEN out.String("agena: no [[server]] in "); out.String(file); out.Ln; RETURN FALSE END;
@@ -575,9 +687,10 @@ BEGIN
   IF dir = "/config" THEN IF ~Texts.Arg(A, config) THEN Usage; RETURN END
   ELSIF ~Texts.Arg(A, cert) OR ~Texts.Arg(A, key) THEN Usage; RETURN
   END;
-  port := -1; count := -1; hostName := ""; queue := -1; secs := -1;
+  port := -1; count := -1; hostName := ""; queue := -1; secs := -1; nSpecs := 0;
   WHILE Texts.Arg(A, arg) DO
     IF (arg = "/host") & (config = "") THEN IF ~Texts.Arg(A, hostName) THEN Usage; RETURN END
+    ELSIF arg = "/listen" THEN IF ~Texts.Arg(A, arg) THEN Usage; RETURN END; Listen(arg)
     ELSIF arg = "/n" THEN IF ~Texts.Arg(A, arg) OR ~Int(arg, count) THEN Usage; RETURN END
     ELSIF arg = "/queue" THEN IF ~Texts.Arg(A, arg) OR ~Int(arg, queue) OR (queue < 1) THEN Usage; RETURN END
     ELSIF arg = "/timeout" THEN IF ~Texts.Arg(A, arg) OR ~Int(arg, secs) THEN Usage; RETURN END
@@ -586,7 +699,7 @@ BEGIN
   END;
   IF config # "" THEN  (* the options of the command line win over the file *)
     p := DefaultPort; IF queue < 0 THEN queue := queueLen END; IF secs < 0 THEN secs := timeout END;
-    IF ~Configure(config, p, queue, secs) THEN RETURN END;
+    IF ~Configure(config, p, queue, secs) THEN nSpecs := 0; RETURN END;
     IF port < 0 THEN port := p END;
     Run(port, count, queue, secs)
   ELSE
@@ -633,11 +746,14 @@ BEGIN
   out.String("    has 10 seconds. /queue n and /timeout s change them for one Serve;"); out.Ln;
   out.String("    agena.SetQueueLen n and agena.SetTimeout s for the next Serve in this loksh."); out.Ln;
   out.String("    Each request is logged: the client, the status and the URL."); out.Ln; out.Ln;
-  out.String("  agena.Serve /config agena.toml [port] [/n count] [/queue n] [/timeout s]"); out.Ln;
+  out.String("  agena.Serve ... /listen addr   listens on addr instead of every address (IPv4 and"); out.Ln;
+  out.String("    IPv6); repeat it for several: 192.0.2.1, 2001:db8::1, [2001:db8::1]:1966, *:1966."); out.Ln; out.Ln;
+  out.String("  agena.Serve /config agena.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]"); out.Ln;
   out.String("    serves several servers (virtual hosts) on one port; the host name of the"); out.Ln;
   out.String("    handshake (SNI) chooses the server and its certificate, no name the first one."); out.Ln;
   out.String("    agena.toml (names in UTF-8 are fine, index is optional):"); out.Ln; out.Ln;
-  out.String("      port = 1965"); out.Ln; out.Ln;
+  out.String("      port = 1965"); out.Ln;
+  out.String('      listen = ["*"]   # or ["192.0.2.1", "[2001:db8::1]:1966"]'); out.Ln; out.Ln;
   out.String("      [[server]]"); out.Ln;
   out.String('      name  = "norayr.am"'); out.Ln;
   out.String('      root  = "/srv/gemini/norayr.am/pub"'); out.Ln;
@@ -659,6 +775,6 @@ BEGIN
 END Help;
 
 BEGIN
-  listener := NIL; s := NIL; queueLen := DefaultQueue; timeout := DefaultTimeout;
-  hosts := NIL; current := NIL; types := NIL; byName := FALSE
+  s := NIL; queueLen := DefaultQueue; timeout := DefaultTimeout;
+  hosts := NIL; current := NIL; types := NIL; byName := FALSE; nListen := 0; nSpecs := 0
 END agena.

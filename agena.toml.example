@@ -2,7 +2,8 @@
 # Several servers on one port: the host name a client asks for (SNI) chooses the server and its
 # certificate; a client that names none gets the first. Names may be written in UTF-8.
 
-port    = 1965     # optional, these three
+port    = 1965     # optional, these four
+listen  = ["*"]    # every address, IPv4 and IPv6; or ["192.0.2.1", "[2001:db8::1]:1966"]
 queue   = 16       # connections waiting while one is served
 timeout = 10       # seconds a client may take
 

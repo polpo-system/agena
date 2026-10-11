@@ -2,7 +2,8 @@ MODULE AgenaTest;  (* AgenaTest.Run: agena serves this directory in a child proc
   for localhost, index.gmi), this process asks for pages as a Gemini client and prints the status
   lines: "20 text/gemini; charset=utf-8", "51 not found" (twice), "53 proxy request refused".
   AgenaTest.Hosts: the servers of agena.toml, chosen by the host name of the handshake or of the
-  URL; AgenaTest.Names: host names in punycode *)
+  URL; AgenaTest.Names: host names in punycode; AgenaTest.Listen: agena on an IPv4 and an IPv6
+  address of its own (127.0.0.1 and ::1, on two ports) *)
 
 IMPORT SYSTEM, Linux0, Kernel, Sockets, TLS13Live, agena, out;
 
@@ -15,16 +16,30 @@ VAR t: LONGINT;
 BEGIN t := Kernel.GetTimer(); WHILE Kernel.GetTimer() - t < ms DO END
 END Sleep;
 
-(* waits until port takes connections (the probe is one connection of the server) *)
-PROCEDURE Ready(port: LONGINT): BOOLEAN;
+(* waits until port of addr takes connections (the probe is one connection of the server) *)
+PROCEDURE ReadyAt(addr: ARRAY OF CHAR; port: LONGINT): BOOLEAN;
 VAR a: Sockets.Address; c: Sockets.Socket; i: LONGINT;
 BEGIN
-  IF ~Sockets.ParseAddress("127.0.0.1", a) THEN RETURN FALSE END;
+  IF ~Sockets.ParseAddress(addr, a) THEN RETURN FALSE END;
   i := 0; c := NIL;
   WHILE (c = NIL) & (i < 100) DO c := Sockets.Connect(a, port); IF c = NIL THEN Sleep(100) END; INC(i) END;
   IF c = NIL THEN RETURN FALSE END;
   Sockets.Close(c); RETURN TRUE
+END ReadyAt;
+
+PROCEDURE Ready(port: LONGINT): BOOLEAN;
+BEGIN RETURN ReadyAt("127.0.0.1", port)
 END Ready;
+
+(* does port of addr refuse connections? *)
+PROCEDURE Refused(addr: ARRAY OF CHAR; port: LONGINT): BOOLEAN;
+VAR a: Sockets.Address; c: Sockets.Socket;
+BEGIN
+  IF ~Sockets.ParseAddress(addr, a) THEN RETURN FALSE END;
+  c := Sockets.Connect(a, port);
+  IF c = NIL THEN RETURN TRUE END;
+  Sockets.Close(c); RETURN FALSE
+END Refused;
 
 PROCEDURE IntToStr(x: LONGINT; VAR a: ARRAY OF CHAR);
 VAR d: ARRAY 12 OF CHAR; i, j: LONGINT;
@@ -117,6 +132,29 @@ BEGIN
   IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
   out.Ln
 END Hosts;
+
+PROCEDURE Listen*;
+VAR pid, port, r, st: LONGINT; p, p2: ARRAY 8 OF CHAR; spec, url: ARRAY 128 OF CHAR;
+BEGIN
+  IF s = NIL THEN NEW(s) END;
+  port := 20000 + Kernel.GetTimer() MOD 20000; IntToStr(port, p); IntToStr(port + 1, p2);
+  pid := Linux0.Fork0();
+  IF pid = 0 THEN
+    spec := "127.0.0.1:"; Append(spec, p); agena.Listen(spec);
+    spec := "[::1]:"; Append(spec, p2); agena.Listen(spec);
+    agena.Start(".", "cert.pem", "key.pem", "localhost", port, 4, 4, 5); Linux0.Exit0(0)
+  END;
+  IF ~ReadyAt("127.0.0.1", port) OR ~ReadyAt("::1", port + 1) THEN out.String("the server did not start"); out.Ln
+  ELSE
+    out.String("IPv4 127.0.0.1: "); URL("localhost", p, "/", url); GetFrom("127.0.0.1", url, p, "zq test capsule");
+    out.String("IPv6 ::1: "); URL("localhost", p2, "/", url); GetFrom("::1", url, p2, "zq test capsule");
+    IF Refused("127.0.0.1", port + 1) THEN out.String("not listening: 127.0.0.1 on the port of ::1") ELSE out.String("missing: refused") END;
+    out.Ln
+  END;
+  st := 0; r := Linux0.Waitpid0(pid, SYSTEM.ADR(st), 0);
+  IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
+  out.Ln
+END Listen;
 
 PROCEDURE Name(in, want: ARRAY OF CHAR);
 VAR a: ARRAY 256 OF CHAR;

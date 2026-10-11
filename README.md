@@ -14,8 +14,8 @@ from its extension (`.gmi` is `text/gemini`, see Types). Each request is logged:
 status and the URL. Several capsules under different names on one port: see Virtual hosts.
 
 ```
-agena.Serve dir cert.pem key.pem [port] [/host name] [/n count] [/queue n] [/timeout s]
-agena.Serve /config agena.toml [port] [/n count] [/queue n] [/timeout s]
+agena.Serve dir cert.pem key.pem [port] [/listen addr]... [/host name] [/n count] [/queue n] [/timeout s]
+agena.Serve /config agena.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]
 agena.SetQueueLen n
 agena.SetTimeout s
 agena.Help
@@ -28,6 +28,34 @@ that for one run; `agena.SetQueueLen` and `agena.SetTimeout` for the next `agena
 loksh (its shell, or the desktop), since a module stays loaded. Ctrl+C stops the server and closes
 its socket. Programs can call `agena.Start(dir, cert, key, host, port, count, queue, secs)`.
 
+## Addresses: IPv4 and IPv6
+
+agena listens on every address of the machine, IPv4 and IPv6, with one IPv6 socket that also
+takes IPv4 connections (they are logged as `::ffff:192.0.2.1`). To listen only on some
+addresses, name them with `/listen`, as often as needed, or with `listen` in the configuration
+file:
+
+```
+loksh agena.Serve capsule cert.pem key.pem /listen 192.0.2.1 /listen 2001:db8::1
+```
+
+```toml
+port   = 1965
+listen = ["192.0.2.1", "[2001:db8::1]:1966"]
+```
+
+An entry is an IPv4 address (`192.0.2.1`), an IPv6 address (`2001:db8::1`, or in brackets,
+`[2001:db8::1]`, which is needed when a port follows), `0.0.0.0` (every IPv4 address), `::`
+or `*` (every address, IPv4 and IPv6), and any of these with `:port`, as `192.0.2.1:1966` or
+`*:1966`; without a port, the port of the server (1965, or `port`). `/listen` on the command line
+replaces the `listen` of the file. At the start agena shows each address it listens on, and
+stops if one cannot be opened: an address that is not one of the machine's, a port in use (`*`
+already takes the IPv4 addresses, so `*` and `0.0.0.0` on the same port collide), or a port below
+1024 without root. With several addresses, agena waits for a connection on all of them
+(`select`) and serves the clients one after the other, as with one; the log shows the address a
+client came to (`192.0.2.7 > 192.0.2.1 20 gemini://...`). All servers of a configuration file
+answer on all its addresses.
+
 ## Virtual hosts: several servers on one port
 
 One agena can serve several capsules, each under its own name, with its own directory and
@@ -39,7 +67,8 @@ loksh agena.Serve /config agena.toml
 
 ```toml
 # agena.toml
-port    = 1965     # optional, these three
+port    = 1965     # optional, these four
+listen  = ["*"]    # every address, IPv4 and IPv6 (see Addresses)
 queue   = 16       # connections waiting while one is served
 timeout = 10       # seconds a client may take
 
@@ -146,4 +175,5 @@ bin/x86/loksh compiler.Compile /s ../agena/agena.Mod
 
 `test/AgenaTest.Mod` starts agena in a child process on the files of `test/` and asks for pages
 as a client, in a directory with the files of `test/`: `AgenaTest.Run` (one directory),
-`AgenaTest.Hosts` (the two servers of `test/agena.toml`) and `AgenaTest.Names` (punycode).
+`AgenaTest.Hosts` (the two servers of `test/agena.toml`), `AgenaTest.Names` (punycode) and
+`AgenaTest.Listen` (127.0.0.1 and ::1 on two ports).

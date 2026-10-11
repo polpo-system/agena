@@ -1,0 +1,25 @@
+# agena.Serve /config agena.toml
+# Several servers on one port: the host name a client asks for (SNI) chooses the server and its
+# certificate; a client that names none gets the first. Names may be written in UTF-8.
+
+port    = 1965     # optional, these three
+queue   = 16       # connections waiting while one is served
+timeout = 10       # seconds a client may take
+
+[[server]]
+name  = "սոնա.հայ"
+root  = "/srv/gemini/սոնա.հայ/pub"
+cert  = "/srv/gemini/սոնա.հայ/fullchain.pem"
+key   = "/srv/gemini/սոնա.հայ/privkey.pem"
+index = "index.gmi"   # optional, the default
+
+[[server]]
+name  = "norayr.am"
+root  = "/srv/gemini/norayr.am/pub"
+cert  = "/srv/gemini/norayr.am/norayr.am.crt"
+key   = "/srv/gemini/norayr.am/norayr.am.key"
+
+# types of extensions, beyond (or instead of) those agena knows
+[types]
+mp3 = "audio/mpeg"
+ogg = "audio/ogg"

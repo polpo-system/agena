@@ -1,6 +1,8 @@
 MODULE AgenaTest;  (* AgenaTest.Run: agena serves this directory in a child process (cert.pem and key.pem
   for localhost, index.gmi), this process asks for pages as a Gemini client and prints the status
-  lines: "20 text/gemini; charset=utf-8", "51 not found" (twice), "53 proxy request refused" *)
+  lines: "20 text/gemini; charset=utf-8", "51 not found" (twice), "53 proxy request refused".
+  AgenaTest.Hosts: the servers of agena.toml, chosen by the host name of the handshake or of the
+  URL; AgenaTest.Names: host names in punycode *)
 
 IMPORT SYSTEM, Linux0, Kernel, Sockets, TLS13Live, agena, out;
 
@@ -39,11 +41,11 @@ BEGIN
   a[i] := 0X
 END Append;
 
-(* the request url, the status line printed; body: the answer contains it *)
-PROCEDURE Get(url, port, body: ARRAY OF CHAR);
+(* the request url to host, the status line printed; body: the answer contains it *)
+PROCEDURE GetFrom(host, url, port, body: ARRAY OF CHAR);
 VAR req: ARRAY 256 OF CHAR; buf: ARRAY 4096 OF CHAR; n, got, i, j: LONGINT; found: BOOLEAN;
 BEGIN
-  IF ~TLS13Live.ConnectPinned("localhost", port, s^, "") THEN out.String("no connection: "); out.String(TLS13Live.lastError); out.Ln; RETURN END;
+  IF ~TLS13Live.ConnectPinned(host, port, s^, "") THEN out.String("no connection: "); out.String(TLS13Live.lastError); out.Ln; RETURN END;
   COPY(url, req); i := 0; WHILE req[i] # 0X DO INC(i) END; req[i] := 0DX; req[i + 1] := 0AX; req[i + 2] := 0X;
   IF ~TLS13Live.WriteAppString(s^, req) THEN out.String("not sent"); out.Ln END;
   n := 0;
@@ -62,6 +64,10 @@ BEGIN
     IF found THEN out.String("body: ") ELSE out.String("body missing: ") END;
     out.String(body); out.Ln
   END
+END GetFrom;
+
+PROCEDURE Get(url, port, body: ARRAY OF CHAR);
+BEGIN GetFrom("localhost", url, port, body)
 END Get;
 
 PROCEDURE Run*;
@@ -85,5 +91,50 @@ BEGIN
   IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
   out.Ln
 END Run;
+
+(* url := "gemini://" host ":" port path *)
+PROCEDURE URL(host, port, path: ARRAY OF CHAR; VAR url: ARRAY OF CHAR);
+BEGIN
+  COPY("gemini://", url); Append(url, host); Append(url, ":"); Append(url, port); Append(url, path)
+END URL;
+
+PROCEDURE Hosts*;
+VAR pid, port, r, st: LONGINT; p: ARRAY 8 OF CHAR; url: ARRAY 128 OF CHAR;
+BEGIN
+  IF s = NIL THEN NEW(s) END;
+  port := 20000 + Kernel.GetTimer() MOD 20000; IntToStr(port, p);
+  pid := Linux0.Fork0();
+  IF pid = 0 THEN agena.StartConfig("agena.toml", port, 6, 4, 5); Linux0.Exit0(0) END;
+  IF ~Ready(port) THEN out.String("the server did not start"); out.Ln
+  ELSE
+    out.String("no SNI, the first server: "); URL("zq-default.example", p, "/", url); GetFrom("127.0.0.1", url, p, "page one");
+    out.String("SNI localhost: "); URL("localhost", p, "/", url); GetFrom("localhost", url, p, "page two");
+    out.String("SNI localhost, the URL of the other: "); URL("zq-default.example", p, "/", url); GetFrom("localhost", url, p, "");
+    out.String("a type of agena.toml: "); URL("localhost", p, "/x.zq", url); GetFrom("localhost", url, p, "");
+    out.String("no SNI, an unknown host: "); URL("unknown.example", p, "/", url); GetFrom("127.0.0.1", url, p, "")
+  END;
+  st := 0; r := Linux0.Waitpid0(pid, SYSTEM.ADR(st), 0);
+  IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
+  out.Ln
+END Hosts;
+
+PROCEDURE Name(in, want: ARRAY OF CHAR);
+VAR a: ARRAY 256 OF CHAR;
+BEGIN
+  agena.ToASCII(in, a);
+  IF a = want THEN out.String("name: ") ELSE out.String("name missing: ") END;
+  out.String(want); IF a # want THEN out.String(" got "); out.String(a) END; out.Ln
+END Name;
+
+PROCEDURE Names*;
+BEGIN
+  Name("norayr.am", "norayr.am");
+  Name("Norayr.AM", "norayr.am");
+  Name("սոնա.հայ", "xn--y9a5bft.xn--y9a3aq");
+  Name("ՍՈՆԱ.ՀԱՅ", "xn--y9a5bft.xn--y9a3aq");
+  Name("փետուր.նակագին.հայ", "xn--29a2bufjc.xn--y9aag6ar4bf.xn--y9a3aq");
+  Name("bücher.example", "xn--bcher-kva.example");
+  Name("日本語.jp", "xn--wgv71a119e.jp")
+END Names;
 
 END AgenaTest.

@@ -22,7 +22,7 @@ MODULE agena;  (** a Gemini server (gemini://, port 1965) over the TLS 1.3 of sr
    for one Serve. Ctrl+C stops the server and closes its socket.
    The certificate must have an ECDSA P-256 key (TLS13Server); agena.Help shows how to make one. *)
 
-IMPORT SYSTEM, Linux0, Sockets, TLSBytes, TLS13Live, TLS13Server, TOML, Texts := texts, out, Oberon := Oberon0;
+IMPORT SYSTEM, Linux0, Files, FATFiles, Sockets, TLSBytes, TLS13Live, TLS13Server, TOML, Texts := texts, out, Oberon := Oberon0;
 
 CONST
   DefaultPort = 1965;
@@ -56,6 +56,7 @@ VAR
   specs: ARRAY MaxListen OF ARRAY 64 OF CHAR; nSpecs: LONGINT;  (* the addresses to listen on *)
   s: State;               (* the connection being served *)
   hosts: Host;            (* the servers, the first one for clients that name none *)
+  entries: Entry;         (* the entries of a directory Collect gathers *)
   current: Host;          (* the server of the connection *)
   byName: BOOLEAN;        (* several servers, chosen by the host name *)
   types: Type;
@@ -264,44 +265,37 @@ BEGIN
   END
 END MimeType;
 
-(* the file open as fd, after "20 mime" *)
-PROCEDURE SendFile(fd: LONGINT; VAR name: ARRAY OF CHAR): BOOLEAN;
-VAR b: TLSBytes.Buffer; n: LONGINT; mime: ARRAY 64 OF CHAR; ok: BOOLEAN;
+(* the file f, after "20 mime"; its descriptor is closed after *)
+PROCEDURE SendFile(f: Files.File; VAR name: ARRAY OF CHAR): BOOLEAN;
+VAR b: TLSBytes.Buffer; r: Files.Rider; n, k: LONGINT; mime: ARRAY 64 OF CHAR; ok: BOOLEAN;
 BEGIN
   MimeType(name, mime); ok := Status(20, mime);
-  LOOP
-    IF ~ok THEN EXIT END;
-    n := Linux0.Read0(fd, SYSTEM.ADR(b.data[0]), Chunk);
-    IF n <= 0 THEN EXIT END;
-    b.len := n; ok := TLS13Live.WriteAppBuffer(s^, b)
+  n := Files.Length(f); Files.Set(r, f, 0);
+  WHILE ok & (n > 0) DO
+    k := n; IF k > Chunk THEN k := Chunk END;
+    Files.ReadBytes(r, b.data, k); b.len := k; ok := TLS13Live.WriteAppBuffer(s^, b); DEC(n, k)
   END;
+  Files.ReleaseRead(f);
   RETURN ok
 END SendFile;
 
-(* the entries of the directory open as fd, sorted, without names starting with a dot;
-   FALSE if fd is not a directory *)
-PROCEDURE ReadDir(fd: LONGINT; VAR list: Entry): BOOLEAN;
-VAR n, i, k, rec: LONGINT; buf: ARRAY 4096 OF CHAR; e, p, q: Entry;
+PROCEDURE Collect(name: ARRAY OF CHAR; time, date, size: LONGINT; attr: SET; VAR continue: BOOLEAN);
+VAR e, p, q: Entry;
 BEGIN
-  list := NIL;
-  n := Linux0.GetDents0(fd, SYSTEM.ADR(buf[0]), LEN(buf));  (* getdents64: length at 16, type at 18, name at 19 *)
-  IF n < 0 THEN RETURN FALSE END;
-  WHILE n > 0 DO
-    i := 0;
-    WHILE i < n DO
-      rec := ORD(buf[i + 16]) + 256 * LONG(ORD(buf[i + 17]));
-      IF buf[i + 19] # "." THEN
-        NEW(e); k := 0; WHILE (buf[i + 19 + k] # 0X) & (k < NameLen - 1) DO e.name[k] := buf[i + 19 + k]; INC(k) END;
-        e.name[k] := 0X; e.dir := buf[i + 18] = 4X;  (* DT_DIR *)
-        IF (list = NIL) OR (e.name < list.name) THEN e.next := list; list := e
-        ELSE p := list; q := list.next; WHILE (q # NIL) & (q.name < e.name) DO p := q; q := q.next END; e.next := q; p.next := e
-        END
-      END;
-      INC(i, rec)
-    END;
-    n := Linux0.GetDents0(fd, SYSTEM.ADR(buf[0]), LEN(buf))
-  END;
-  RETURN TRUE
+  IF name[0] # "." THEN
+    NEW(e); COPY(name, e.name); e.dir := FATFiles.SubDir IN attr;
+    IF (entries = NIL) OR (e.name < entries.name) THEN e.next := entries; entries := e
+    ELSE p := entries; q := entries.next; WHILE (q # NIL) & (q.name < e.name) DO p := q; q := q.next END; e.next := q; p.next := e
+    END
+  END
+END Collect;
+
+(* the entries of the directory dir, sorted, without names starting with a dot *)
+PROCEDURE ReadDir(VAR dir: ARRAY OF CHAR; VAR list: Entry);
+VAR pat: ARRAY PathLen + 32 OF CHAR; res: LONGINT;
+BEGIN
+  COPY(dir, pat); IF pat[Len(pat) - 1] # "/" THEN Append(pat, "/") END;
+  entries := NIL; FATFiles.Enumerate(pat, Collect, res); list := entries; entries := NIL
 END ReadDir;
 
 (* a list of the files in the directory path (the URL path, ending with /) *)
@@ -383,7 +377,7 @@ END Parse;
 (* answers the request url; status: the status sent *)
 PROCEDURE Answer(VAR url: ARRAY OF CHAR; VAR status: LONGINT);
 VAR h, ah: ARRAY 256 OF CHAR; path, file, index, target: ARRAY PathLen + 32 OF CHAR;
-  fd, fd2, r: LONGINT; list: Entry; ok: BOOLEAN;
+  r: LONGINT; list: Entry; ok: BOOLEAN; f: Files.File; full: Files.FileName; flags: SET;
 BEGIN
   Parse(url, h, path, status);
   IF status = 0 THEN
@@ -392,23 +386,23 @@ BEGIN
     IF (current = NIL) OR (current.name[0] # 0X) & (current.name # ah) THEN status := 53
     ELSE
       COPY(current.root, file); Append(file, path);
-      fd := Linux0.Openat0(Linux0.ATFDCWD, SYSTEM.ADR(file[0]), Linux0.ORDonly, 0);
-      IF fd < 0 THEN status := 51
-      ELSIF ReadDir(fd, list) THEN
+      IF ~Files.Exists(file, full, flags) THEN status := 51
+      ELSIF Files.Directory IN flags THEN
         IF path[Len(path) - 1] # "/" THEN
           status := 31; COPY(url, target);
           r := 0; WHILE (target[r] # 0X) & (target[r] # "?") & (target[r] # "#") DO INC(r) END;
           target[r] := 0X; Append(target, "/"); ok := Status(31, target)
         ELSE
           COPY(file, index); Append(index, current.index);
-          fd2 := Linux0.Openat0(Linux0.ATFDCWD, SYSTEM.ADR(index[0]), Linux0.ORDonly, 0);
+          IF Files.Exists(index, full, flags) & ~(Files.Directory IN flags) THEN f := Files.Old(index) ELSE f := NIL END;
           status := 20;
-          IF fd2 >= 0 THEN ok := SendFile(fd2, index); r := Linux0.Close0(fd2)
-          ELSE ok := SendList(path, list)
+          IF f # NIL THEN ok := SendFile(f, index)
+          ELSE ReadDir(file, list); ok := SendList(path, list)
           END
-        END;
-        r := Linux0.Close0(fd)
-      ELSE status := 20; ok := SendFile(fd, file); r := Linux0.Close0(fd)
+        END
+      ELSE
+        f := Files.Old(file);
+        IF f = NIL THEN status := 51 ELSE status := 20; ok := SendFile(f, file) END
       END
     END
   END;
@@ -608,14 +602,14 @@ END Start;
 
 (* text := the file name; FALSE if it cannot be read or is too long *)
 PROCEDURE ReadFile(VAR name: ARRAY OF CHAR; text: Text): BOOLEAN;
-VAR fd, n, r: LONGINT;
+VAR f: Files.File; r: Files.Rider; n: LONGINT;
 BEGIN
-  fd := Linux0.Openat0(Linux0.ATFDCWD, SYSTEM.ADR(name[0]), Linux0.ORDonly, 0);
-  IF fd < 0 THEN RETURN FALSE END;
-  n := 0; r := 1;
-  WHILE (r > 0) & (n < MaxConfig - 1) DO r := Linux0.Read0(fd, SYSTEM.ADR(text[n]), MaxConfig - 1 - n); IF r > 0 THEN INC(n, r) END END;
-  text[n] := 0X; r := Linux0.Close0(fd);
-  RETURN n < MaxConfig - 1
+  f := Files.Old(name);
+  IF f = NIL THEN RETURN FALSE END;
+  n := Files.Length(f);
+  IF n >= MaxConfig - 1 THEN Files.ReleaseRead(f); RETURN FALSE END;
+  Files.Set(r, f, 0); Files.ReadBytes(r, text^, n); text[n] := 0X; Files.ReleaseRead(f);
+  RETURN TRUE
 END ReadFile;
 
 (* hosts, types, port, queue, secs := those of the configuration file; FALSE (and why) if it is wrong *)

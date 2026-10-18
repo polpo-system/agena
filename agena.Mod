@@ -502,16 +502,17 @@ BEGIN
   RETURN TRUE
 END OpenListeners;
 
-(* the next connection on any of the listening sockets; NIL after an error *)
+(* the next connection on any of the listening sockets; NIL after an error. The fd_set of select is
+   an array of 32-bit words, fd n is bit n MOD 32 of word n DIV 32: SETs, right in either byte order *)
 PROCEDURE NextConnection(VAR peer: Sockets.Address; VAR peerPort: LONGINT): Sockets.Socket;
-VAR set: ARRAY 128 OF CHAR; i, n, fd, r: LONGINT;
+VAR set: ARRAY 32 OF SET; i, n, fd, r: LONGINT;
 BEGIN
   IF nListen = 1 THEN RETURN Sockets.Accept(listeners[0], peer, peerPort) END;
-  i := 0; WHILE i < LEN(set) DO set[i] := 0X; INC(i) END;
+  i := 0; WHILE i < LEN(set) DO set[i] := {}; INC(i) END;
   n := 0; i := 0;
   WHILE i < nListen DO
     fd := listeners[i].fd;
-    IF (fd >= 0) & (fd < 1024) THEN set[fd DIV 8] := CHR(ORD(set[fd DIV 8]) + ASH(1, fd MOD 8)); IF fd >= n THEN n := fd + 1 END END;
+    IF (fd >= 0) & (fd < 1024) THEN INCL(set[fd DIV 32], fd MOD 32); IF fd >= n THEN n := fd + 1 END END;
     INC(i)
   END;
   r := Linux0.Select0(n, SYSTEM.ADR(set[0]), 0, 0, 0);  (* waits without end *)
@@ -519,7 +520,7 @@ BEGIN
   i := 0;
   WHILE i < nListen DO
     fd := listeners[i].fd;
-    IF ODD(ASH(ORD(set[fd DIV 8]), -(fd MOD 8))) THEN RETURN Sockets.Accept(listeners[i], peer, peerPort) END;
+    IF (fd MOD 32) IN set[fd DIV 32] THEN RETURN Sockets.Accept(listeners[i], peer, peerPort) END;
     INC(i)
   END;
   RETURN NIL

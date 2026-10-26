@@ -107,9 +107,12 @@ How a server is chosen:
 
 Names may be written in UTF-8, as `սոնա.հայ`. Clients send such names in punycode
 (`xn--y9a5bft.xn--y9a3aq`), and agena converts the names of the file in the same way before it
-compares them; capitals are lowered (ASCII and Armenian letters). A URL may carry the host in
-either form. Each server is announced at the start (`agena: serving ... as xn--...`), so the
-punycode of a name can be seen there.
+compares them, with IDNA.Names of the package punycode: Unicode 16.0 mapping (UTS #46, capitals
+lowered in every script), NFC and the rules of IDNA2008. A URL may carry the host in either form.
+A name these rules refuse (an empty label, `a.example.`, a malformed `xn--` label, a 0X written
+as `%00`) in a URL is answered 59 (bad request); with such a name in its configuration agena
+does not start ("agena: invalid host name"). Each server is announced at the start
+(`agena: serving ... as xn--...`), so the punycode of a name can be seen there.
 
 Programs can call `agena.StartConfig(file, port, count, queue, secs)`.
 
@@ -162,8 +165,9 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 
 ## Installing
 
-With portia: `loksh portia.Install agena` (and `portia.Install /t agena` runs the tests). By hand, in
-the polpo directory:
+With portia: `loksh portia.Install agena` (and `portia.Install /t agena` runs the tests); it
+installs the package punycode too. By hand, in the polpo directory, after `portia.Install
+punycode`:
 
 ```
 bin/x86/loksh compiler.Compile /s ../agena/agena.Mod
@@ -175,5 +179,6 @@ bin/x86/loksh compiler.Compile /s ../agena/agena.Mod
 
 `test/AgenaTest.Mod` starts agena in a child process on the files of `test/` and asks for pages
 as a client, in a directory with the files of `test/`: `AgenaTest.Run` (one directory),
-`AgenaTest.Hosts` (the two servers of `test/agena.toml`), `AgenaTest.Names` (punycode) and
+`AgenaTest.Hosts` (the two servers of `test/agena.toml`), `AgenaTest.Names` (punycode, and
+names that are refused) and
 `AgenaTest.Listen` (127.0.0.1 and ::1 on two ports).

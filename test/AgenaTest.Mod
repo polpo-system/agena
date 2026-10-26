@@ -7,7 +7,7 @@ MODULE AgenaTest;  (* AgenaTest.Run: agena serves this directory in a child proc
 
 IMPORT SYSTEM, Linux0, Kernel, Sockets, TLS13Live, agena, out;
 
-CONST Requests = 4;
+CONST Requests = 6;
 
 VAR s: POINTER TO TLS13Live.State;
 
@@ -100,7 +100,9 @@ BEGIN
     url[r] := "/"; url[r + 1] := 0X; Get(url, p, "zq test capsule");
     url[r] := 0X; Append(url, "/nothing.gmi"); Get(url, p, "");
     url[r] := 0X; Append(url, "/x/../index.gmi"); Get(url, p, "");
-    Get("https://localhost/", p, "")
+    Get("https://localhost/", p, "");
+    url := "gemini://local%00host:"; Append(url, p); Append(url, "/"); Get(url, p, "");  (* a 0X in the host *)
+    url := "gemini://a..b:"; Append(url, p); Append(url, "/"); Get(url, p, "")  (* not a host name (IDNA) *)
   END;
   st := 0; r := Linux0.Waitpid0(pid, SYSTEM.ADR(st), 0);
   IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
@@ -172,7 +174,14 @@ BEGIN
   Name("ՍՈՆԱ.ՀԱՅ", "xn--y9a5bft.xn--y9a3aq");
   Name("փետուր.նակագին.հայ", "xn--29a2bufjc.xn--y9aag6ar4bf.xn--y9a3aq");
   Name("bücher.example", "xn--bcher-kva.example");
-  Name("日本語.jp", "xn--wgv71a119e.jp")
+  Name("日本語.jp", "xn--wgv71a119e.jp");
+  Name("ծոց.հայ", "xn--cbbu1a.xn--y9a3aq");
+  Name("é.example", "xn--9ca.example");
+  Name("faß.de", "xn--fa-hia.de");
+  Name("xn--cbbu1a.xn--y9a3aq", "xn--cbbu1a.xn--y9a3aq");
+  (* refused (UTS #46, IDNA2008, DNS syntax): an empty name *)
+  Name("a..b", ""); Name("a.example.", ""); Name("xn--abc", ""); Name("a＠b.example", "");
+  Name("אa.example", ""); Name("a‍b.example", ""); Name("123.א", "")
 END Names;
 
 END AgenaTest.

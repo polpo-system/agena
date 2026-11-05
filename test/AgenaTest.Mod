@@ -5,7 +5,7 @@ MODULE AgenaTest;  (* AgenaTest.Run: agena serves this directory in a child proc
   URL; AgenaTest.Names: host names in punycode; AgenaTest.Listen: agena on an IPv4 and an IPv6
   address of its own (127.0.0.1 and ::1, on two ports) *)
 
-IMPORT SYSTEM, Linux0, Kernel, Sockets, TLS13Live, agena, out;
+IMPORT SYSTEM, Linux0, Kernel, Sockets, TLS13Live, agena, Out;
 
 CONST Requests = 6;
 
@@ -60,24 +60,24 @@ END Append;
 PROCEDURE GetFrom(host, url, port, body: ARRAY OF CHAR);
 VAR req: ARRAY 256 OF CHAR; buf: ARRAY 4096 OF CHAR; n, got, i, j: LONGINT; found: BOOLEAN;
 BEGIN
-  IF ~TLS13Live.ConnectPinned(host, port, s^, "") THEN out.String("no connection: "); out.String(TLS13Live.lastError); out.Ln; RETURN END;
+  IF ~TLS13Live.ConnectPinned(host, port, s^, "") THEN Out.String("no connection: "); Out.String(TLS13Live.lastError); Out.Ln; RETURN END;
   COPY(url, req); i := 0; WHILE req[i] # 0X DO INC(i) END; req[i] := 0DX; req[i + 1] := 0AX; req[i + 2] := 0X;
-  IF ~TLS13Live.WriteAppString(s^, req) THEN out.String("not sent"); out.Ln END;
+  IF ~TLS13Live.WriteAppString(s^, req) THEN Out.String("not sent"); Out.Ln END;
   n := 0;
   WHILE (n < LEN(buf) - 1) & TLS13Live.ReadAppMax(s^, req, 255, got) DO
     i := 0; WHILE (i < got) & (n < LEN(buf) - 1) DO buf[n] := req[i]; INC(n); INC(i) END
   END;
   buf[n] := 0X; TLS13Live.Disconnect(s^);
   i := 0; WHILE (buf[i] # 0X) & (buf[i] # 0DX) DO INC(i) END;
-  out.String("status: "); j := 0; WHILE j < i DO out.Char(buf[j]); INC(j) END; out.Ln;
+  Out.String("status: "); j := 0; WHILE j < i DO Out.Char(buf[j]); INC(j) END; Out.Ln;
   IF body[0] # 0X THEN
     found := FALSE; i := 0;
     WHILE ~found & (buf[i] # 0X) DO
       j := 0; WHILE (body[j] # 0X) & (buf[i + j] = body[j]) DO INC(j) END;
       found := body[j] = 0X; INC(i)
     END;
-    IF found THEN out.String("body: ") ELSE out.String("body missing: ") END;
-    out.String(body); out.Ln
+    IF found THEN Out.String("body: ") ELSE Out.String("body missing: ") END;
+    Out.String(body); Out.Ln
   END
 END GetFrom;
 
@@ -92,7 +92,7 @@ BEGIN
   port := 20000 + Kernel.GetTimer() MOD 20000; IntToStr(port, p);
   pid := Linux0.Fork0();
   IF pid = 0 THEN agena.Start(".", "cert.pem", "key.pem", "localhost", port, Requests + 1, 4, 5); Linux0.Exit0(0) END;
-  IF ~Ready(port) THEN out.String("the server did not start"); out.Ln
+  IF ~Ready(port) THEN Out.String("the server did not start"); Out.Ln
   ELSE
     url := "gemini://localhost:"; r := 0; WHILE url[r] # 0X DO INC(r) END; st := 0;
     WHILE p[st] # 0X DO url[r] := p[st]; INC(r); INC(st) END; url[r] := 0X;
@@ -105,8 +105,8 @@ BEGIN
     url := "gemini://a..b:"; Append(url, p); Append(url, "/"); Get(url, p, "")  (* not a host name (IDNA) *)
   END;
   st := 0; r := Linux0.Waitpid0(pid, SYSTEM.ADR(st), 0);
-  IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
-  out.Ln
+  IF (r = pid) & (st = 0) THEN Out.String("the server ended") ELSE Out.String("the server failed") END;
+  Out.Ln
 END Run;
 
 (* url := "gemini://" host ":" port path *)
@@ -122,17 +122,17 @@ BEGIN
   port := 20000 + Kernel.GetTimer() MOD 20000; IntToStr(port, p);
   pid := Linux0.Fork0();
   IF pid = 0 THEN agena.StartConfig("agena.toml", port, 6, 4, 5); Linux0.Exit0(0) END;
-  IF ~Ready(port) THEN out.String("the server did not start"); out.Ln
+  IF ~Ready(port) THEN Out.String("the server did not start"); Out.Ln
   ELSE
-    out.String("no SNI, the first server: "); URL("zq-default.example", p, "/", url); GetFrom("127.0.0.1", url, p, "page one");
-    out.String("SNI localhost: "); URL("localhost", p, "/", url); GetFrom("localhost", url, p, "page two");
-    out.String("SNI localhost, the URL of the other: "); URL("zq-default.example", p, "/", url); GetFrom("localhost", url, p, "");
-    out.String("a type of agena.toml: "); URL("localhost", p, "/x.zq", url); GetFrom("localhost", url, p, "");
-    out.String("no SNI, an unknown host: "); URL("unknown.example", p, "/", url); GetFrom("127.0.0.1", url, p, "")
+    Out.String("no SNI, the first server: "); URL("zq-default.example", p, "/", url); GetFrom("127.0.0.1", url, p, "page one");
+    Out.String("SNI localhost: "); URL("localhost", p, "/", url); GetFrom("localhost", url, p, "page two");
+    Out.String("SNI localhost, the URL of the other: "); URL("zq-default.example", p, "/", url); GetFrom("localhost", url, p, "");
+    Out.String("a type of agena.toml: "); URL("localhost", p, "/x.zq", url); GetFrom("localhost", url, p, "");
+    Out.String("no SNI, an unknown host: "); URL("unknown.example", p, "/", url); GetFrom("127.0.0.1", url, p, "")
   END;
   st := 0; r := Linux0.Waitpid0(pid, SYSTEM.ADR(st), 0);
-  IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
-  out.Ln
+  IF (r = pid) & (st = 0) THEN Out.String("the server ended") ELSE Out.String("the server failed") END;
+  Out.Ln
 END Hosts;
 
 PROCEDURE Listen*;
@@ -146,24 +146,24 @@ BEGIN
     spec := "[::1]:"; Append(spec, p2); agena.Listen(spec);
     agena.Start(".", "cert.pem", "key.pem", "localhost", port, 4, 4, 5); Linux0.Exit0(0)
   END;
-  IF ~ReadyAt("127.0.0.1", port) OR ~ReadyAt("::1", port + 1) THEN out.String("the server did not start"); out.Ln
+  IF ~ReadyAt("127.0.0.1", port) OR ~ReadyAt("::1", port + 1) THEN Out.String("the server did not start"); Out.Ln
   ELSE
-    out.String("IPv4 127.0.0.1: "); URL("localhost", p, "/", url); GetFrom("127.0.0.1", url, p, "zq test capsule");
-    out.String("IPv6 ::1: "); URL("localhost", p2, "/", url); GetFrom("::1", url, p2, "zq test capsule");
-    IF Refused("127.0.0.1", port + 1) THEN out.String("not listening: 127.0.0.1 on the port of ::1") ELSE out.String("missing: refused") END;
-    out.Ln
+    Out.String("IPv4 127.0.0.1: "); URL("localhost", p, "/", url); GetFrom("127.0.0.1", url, p, "zq test capsule");
+    Out.String("IPv6 ::1: "); URL("localhost", p2, "/", url); GetFrom("::1", url, p2, "zq test capsule");
+    IF Refused("127.0.0.1", port + 1) THEN Out.String("not listening: 127.0.0.1 on the port of ::1") ELSE Out.String("missing: refused") END;
+    Out.Ln
   END;
   st := 0; r := Linux0.Waitpid0(pid, SYSTEM.ADR(st), 0);
-  IF (r = pid) & (st = 0) THEN out.String("the server ended") ELSE out.String("the server failed") END;
-  out.Ln
+  IF (r = pid) & (st = 0) THEN Out.String("the server ended") ELSE Out.String("the server failed") END;
+  Out.Ln
 END Listen;
 
 PROCEDURE Name(in, want: ARRAY OF CHAR);
 VAR a: ARRAY 256 OF CHAR;
 BEGIN
   agena.ToASCII(in, a);
-  IF a = want THEN out.String("name: ") ELSE out.String("name missing: ") END;
-  out.String(want); IF a # want THEN out.String(" got "); out.String(a) END; out.Ln
+  IF a = want THEN Out.String("name: ") ELSE Out.String("name missing: ") END;
+  Out.String(want); IF a # want THEN Out.String(" got "); Out.String(a) END; Out.Ln
 END Name;
 
 PROCEDURE Names*;

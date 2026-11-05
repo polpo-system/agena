@@ -22,7 +22,7 @@ MODULE agena;  (** a Gemini server (gemini://, port 1965) over the TLS 1.3 of sr
    for one Serve. Ctrl+C stops the server and closes its socket.
    The certificate must have an ECDSA P-256 key (TLS13Server); agena.Help shows how to make one. *)
 
-IMPORT SYSTEM, Linux0, Files, FATFiles, Sockets, TLSBytes, TLS13Live, TLS13Server, TOML, Texts := texts, out, Oberon := Oberon0, IDNA;
+IMPORT SYSTEM, Linux0, Files, FATFiles, Sockets, TLSBytes, TLS13Live, TLS13Server, TOML, Texts, Out, Oberon := Oberon0, IDNA;
 
 CONST
   DefaultPort = 1965;
@@ -408,8 +408,8 @@ PROCEDURE ShowAddress(VAR a: Sockets.Address; port: LONGINT);
 VAR t: ARRAY 64 OF CHAR;
 BEGIN
   Sockets.AddressToString(a, t);
-  IF a.family = Sockets.Inet6 THEN out.Char("["); out.String(t); out.Char("]") ELSE out.String(t) END;
-  out.Char(":"); out.Int(port, 0)
+  IF a.family = Sockets.Inet6 THEN Out.Char("["); Out.String(t); Out.Char("]") ELSE Out.String(t) END;
+  Out.Char(":"); Out.Int(port, 0)
 END ShowAddress;
 
 (* the listening sockets of specs ("*" if none) on port; FALSE (and why) if one cannot be opened *)
@@ -421,25 +421,25 @@ BEGIN
   WHILE i < nSpecs DO
     p := port;
     IF ~ParseListen(specs[i], a, p) THEN
-      out.String("agena: not an address to listen on: "); out.String(specs[i]); out.Ln; Close; RETURN FALSE
+      Out.String("agena: not an address to listen on: "); Out.String(specs[i]); Out.Ln; Close; RETURN FALSE
     END;
     l := Sockets.ListenAt(a, p, queue);
     IF l = NIL THEN
-      out.String("agena: cannot listen on "); ShowAddress(a, p);
-      IF Sockets.res = -98 THEN out.String(": in use (* takes IPv4 and IPv6 already)")
-      ELSIF Sockets.res = -99 THEN out.String(": not an address of this machine")
-      ELSIF Sockets.res = -13 THEN out.String(": not allowed (a port below 1024 needs root)")
-      ELSE out.String(", error "); out.Int(-Sockets.res, 0)
+      Out.String("agena: cannot listen on "); ShowAddress(a, p);
+      IF Sockets.res = -98 THEN Out.String(": in use (* takes IPv4 and IPv6 already)")
+      ELSIF Sockets.res = -99 THEN Out.String(": not an address of this machine")
+      ELSIF Sockets.res = -13 THEN Out.String(": not allowed (a port below 1024 needs root)")
+      ELSE Out.String(", error "); Out.Int(-Sockets.res, 0)
       END;
-      out.Ln; Close; RETURN FALSE
+      Out.Ln; Close; RETURN FALSE
     END;
     listeners[nListen] := l; INC(nListen);
-    out.String("agena: listening on "); ShowAddress(a, p);
+    Out.String("agena: listening on "); ShowAddress(a, p);
     IF a.family = Sockets.Inet6 THEN  (* the any address :: takes IPv4 too *)
       k := 0; WHILE (k < 16) & (a.addr[k] = 0X) DO INC(k) END;
-      IF k = 16 THEN out.String(" (IPv4 and IPv6)") END
+      IF k = 16 THEN Out.String(" (IPv4 and IPv6)") END
     END;
-    out.Ln; INC(i)
+    Out.Ln; INC(i)
   END;
   RETURN TRUE
 END OpenListeners;
@@ -470,9 +470,9 @@ END NextConnection;
 
 PROCEDURE Usage;
 BEGIN
-  out.String("usage: agena.Serve dir cert.pem key.pem [port] [/listen addr]... [/host name] [/n count] [/queue n] [/timeout s]"); out.Ln;
-  out.String("       agena.Serve /config file.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]"); out.Ln;
-  out.String("  serves the files below dir over Gemini (port 1965); agena.Help tells more"); out.Ln
+  Out.String("usage: agena.Serve dir cert.pem key.pem [port] [/listen addr]... [/host name] [/n count] [/queue n] [/timeout s]"); Out.Ln;
+  Out.String("       agena.Serve /config file.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]"); Out.Ln;
+  Out.String("  serves the files below dir over Gemini (port 1965); agena.Help tells more"); Out.Ln
 END Usage;
 
 (* serves the servers of hosts on port: count connections (-1: without end) *)
@@ -486,9 +486,9 @@ BEGIN
   nSpecs := 0;  (* /listen and Listen are for one run *)
   h := hosts;
   WHILE h # NIL DO
-    out.String("agena: serving "); out.String(h.root);
-    IF h.name[0] # 0X THEN out.String(" as "); out.String(h.name) END;
-    out.Ln; h := h.next
+    Out.String("agena: serving "); Out.String(h.root);
+    IF h.name[0] # 0X THEN Out.String(" as "); Out.String(h.name) END;
+    Out.Ln; h := h.next
   END;
   served := 0;
   WHILE served # count DO
@@ -501,18 +501,18 @@ BEGIN
       END;
       Sockets.SetTimeout(c, secs * 1000);
       IF ~TLS13Server.AcceptBy(c.fd, Choose, s^) THEN
-        out.String(addr); out.String(" handshake failed: "); out.String(TLS13Server.lastError);
-        IF TLS13Server.serverName[0] # 0X THEN out.String(" ("); out.String(TLS13Server.serverName); out.String(")") END
+        Out.String(addr); Out.String(" handshake failed: "); Out.String(TLS13Server.lastError);
+        IF TLS13Server.serverName[0] # 0X THEN Out.String(" ("); Out.String(TLS13Server.serverName); Out.String(")") END
       ELSE
         IF ~ReadRequest(url) THEN
           status := 59; IF Status(59, "bad request") THEN END
         ELSE Answer(url, status)
         END;
         TLS13Live.Disconnect(s^);
-        out.String(addr); out.Char(" "); out.Int(status, 0); out.Char(" ");
-        IF url[0] = 0X THEN out.Char("-") ELSE out.String(url) END
+        Out.String(addr); Out.Char(" "); Out.Int(status, 0); Out.Char(" ");
+        IF url[0] = 0X THEN Out.Char("-") ELSE Out.String(url) END
       END;
-      out.Ln
+      Out.Ln
     END
   END;
   Close
@@ -524,12 +524,12 @@ VAR h, p: Host;
 BEGIN
   NEW(h); ToASCII(name, h.name); COPY(root, h.root); COPY(index, h.index); h.next := NIL;
   IF (name[0] # 0X) & (h.name[0] = 0X) THEN
-    out.String("agena: invalid host name"); out.Ln; RETURN FALSE
+    Out.String("agena: invalid host name"); Out.Ln; RETURN FALSE
   END;
   WHILE (Len(h.root) > 1) & (h.root[Len(h.root) - 1] = "/") DO h.root[Len(h.root) - 1] := 0X END;
   IF h.index[0] = 0X THEN h.index := "index.gmi" END;
   IF ~TLS13Server.Load(cert, key, h.id) THEN
-    out.String("agena: "); out.String(cert); out.String(": "); out.String(TLS13Server.lastError); out.Ln; RETURN FALSE
+    Out.String("agena: "); Out.String(cert); Out.String(": "); Out.String(TLS13Server.lastError); Out.Ln; RETURN FALSE
   END;
   IF hosts = NIL THEN hosts := h ELSE p := hosts; WHILE p.next # NIL DO p := p.next END; p.next := h END;
   RETURN TRUE
@@ -565,11 +565,11 @@ VAR text: Text; doc: TOML.Doc; sec: TOML.Section; f: TOML.Field; it: TOML.Item; 
 BEGIN
   hosts := NIL; types := NIL; byName := TRUE;
   NEW(text);
-  IF ~ReadFile(file, text) THEN out.String("agena: cannot read "); out.String(file); out.Ln; RETURN FALSE END;
+  IF ~ReadFile(file, text) THEN Out.String("agena: cannot read "); Out.String(file); Out.Ln; RETURN FALSE END;
   doc := TOML.Parse(text^);
   IF doc.errors > 0 THEN
-    out.String("agena: "); out.String(file); out.Char(":"); out.Int(doc.errorLine, 0); out.String(": ");
-    out.String(doc.error); out.Ln; RETURN FALSE
+    Out.String("agena: "); Out.String(file); Out.Char(":"); Out.Int(doc.errorLine, 0); Out.String(": ");
+    Out.String(doc.error); Out.Ln; RETURN FALSE
   END;
   k := ""; sec := TOML.GetSection(doc, k);
   IF sec # NIL THEN
@@ -584,7 +584,7 @@ BEGIN
     END
   END;
   k := "server"; sec := TOML.GetSection(doc, k);
-  IF sec = NIL THEN out.String("agena: no [[server]] in "); out.String(file); out.Ln; RETURN FALSE END;
+  IF sec = NIL THEN Out.String("agena: no [[server]] in "); Out.String(file); Out.Ln; RETURN FALSE END;
   WHILE sec # NIL DO
     k := "name"; IF ~TOML.GetField(sec, k, name) THEN name := "" END;
     k := "root"; IF ~TOML.GetField(sec, k, root) THEN root := "" END;
@@ -592,7 +592,7 @@ BEGIN
     k := "key"; IF ~TOML.GetField(sec, k, key) THEN key := "" END;
     k := "index"; IF ~TOML.GetField(sec, k, index) THEN index := "" END;
     IF (name = "") OR (root = "") OR (cert = "") OR (key = "") THEN
-      out.String("agena: a [[server]] needs name, root, cert and key"); out.Ln; RETURN FALSE
+      Out.String("agena: a [[server]] needs name, root, cert and key"); Out.Ln; RETURN FALSE
     END;
     IF ~NewHost(name, root, index, cert, key) THEN RETURN FALSE END;
     k := "server"; sec := TOML.GetNextSection(sec, k)
@@ -654,7 +654,7 @@ VAR A: Texts.Reader; arg: ARRAY 32 OF CHAR;
 BEGIN
   Texts.OpenArgs(A);
   IF Texts.Arg(A, arg) & Int(arg, n) THEN RETURN TRUE END;
-  out.String("usage: agena."); out.String(usage); out.Ln;
+  Out.String("usage: agena."); Out.String(usage); Out.Ln;
   RETURN FALSE
 END NumArg;
 
@@ -663,7 +663,7 @@ PROCEDURE SetQueueLen*;
 VAR n: LONGINT;
 BEGIN
   IF NumArg("SetQueueLen n   (connections waiting while one is served)", n) & (n > 0) THEN queueLen := n END;
-  out.String("agena: queue "); out.Int(queueLen, 0); out.Ln
+  Out.String("agena: queue "); Out.Int(queueLen, 0); Out.Ln
 END SetQueueLen;
 
 (** agena.SetTimeout s: the seconds a client may take, for the next Serve (0: no limit) *)
@@ -671,47 +671,47 @@ PROCEDURE SetTimeout*;
 VAR n: LONGINT;
 BEGIN
   IF NumArg("SetTimeout s   (seconds a client may take, 0: no limit)", n) THEN timeout := n END;
-  out.String("agena: timeout "); out.Int(timeout, 0); out.String(" s"); out.Ln
+  Out.String("agena: timeout "); Out.Int(timeout, 0); Out.String(" s"); Out.Ln
 END SetTimeout;
 
 PROCEDURE Help*;
 BEGIN
-  out.String("agena, a Gemini server"); out.Ln; out.Ln;
-  out.String("  agena.Serve dir cert.pem key.pem [port] [/host name] [/n count] [/queue n] [/timeout s]"); out.Ln;
-  out.String("    serves the files below dir to gemini:// clients, on port 1965 by default."); out.Ln;
-  out.String("    A directory gives its index.gmi, or a list of its files; names starting with"); out.Ln;
-  out.String("    a dot are not served. /host name answers only requests for that host;"); out.Ln;
-  out.String("    /n count ends after count connections. Ctrl+C stops the server."); out.Ln;
-  out.String("    One client is served at a time; the others wait in a queue (16), each client"); out.Ln;
-  out.String("    has 10 seconds. /queue n and /timeout s change them for one Serve;"); out.Ln;
-  out.String("    agena.SetQueueLen n and agena.SetTimeout s for the next Serve in this loksh."); out.Ln;
-  out.String("    Each request is logged: the client, the status and the URL."); out.Ln; out.Ln;
-  out.String("  agena.Serve ... /listen addr   listens on addr instead of every address (IPv4 and"); out.Ln;
-  out.String("    IPv6); repeat it for several: 192.0.2.1, 2001:db8::1, [2001:db8::1]:1966, *:1966."); out.Ln; out.Ln;
-  out.String("  agena.Serve /config agena.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]"); out.Ln;
-  out.String("    serves several servers (virtual hosts) on one port; the host name of the"); out.Ln;
-  out.String("    handshake (SNI) chooses the server and its certificate, no name the first one."); out.Ln;
-  out.String("    agena.toml (names in UTF-8 are fine, index is optional):"); out.Ln; out.Ln;
-  out.String("      port = 1965"); out.Ln;
-  out.String('      listen = ["*"]   # or ["192.0.2.1", "[2001:db8::1]:1966"]'); out.Ln; out.Ln;
-  out.String("      [[server]]"); out.Ln;
-  out.String('      name  = "norayr.am"'); out.Ln;
-  out.String('      root  = "/srv/gemini/norayr.am/pub"'); out.Ln;
-  out.String('      cert  = "/srv/gemini/norayr.am/fullchain.pem"'); out.Ln;
-  out.String('      key   = "/srv/gemini/norayr.am/privkey.pem"'); out.Ln;
-  out.String('      index = "index.gmi"'); out.Ln; out.Ln;
-  out.String("      [[server]]"); out.Ln;
-  out.String("      ..."); out.Ln; out.Ln;
-  out.String("      [types]"); out.Ln;
-  out.String('      mp3 = "audio/mpeg"'); out.Ln;
-  out.String('      ogg = "audio/ogg"'); out.Ln; out.Ln;
-  out.String("  The certificate needs an ECDSA P-256 key. A self-signed one, as Gemini clients"); out.Ln;
-  out.String("  accept it (trust on first use), is made with openssl:"); out.Ln; out.Ln;
-  out.String("    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes"); out.Ln;
-  out.String("      -keyout key.pem -out cert.pem -days 3650 -subj /CN=example.org"); out.Ln; out.Ln;
-  out.String("  Example:"); out.Ln;
-  out.String("    loksh agena.Serve /home/me/capsule cert.pem key.pem"); out.Ln;
-  out.String("    loksh gemini.Show gemini://localhost/"); out.Ln
+  Out.String("agena, a Gemini server"); Out.Ln; Out.Ln;
+  Out.String("  agena.Serve dir cert.pem key.pem [port] [/host name] [/n count] [/queue n] [/timeout s]"); Out.Ln;
+  Out.String("    serves the files below dir to gemini:// clients, on port 1965 by default."); Out.Ln;
+  Out.String("    A directory gives its index.gmi, or a list of its files; names starting with"); Out.Ln;
+  Out.String("    a dot are not served. /host name answers only requests for that host;"); Out.Ln;
+  Out.String("    /n count ends after count connections. Ctrl+C stops the server."); Out.Ln;
+  Out.String("    One client is served at a time; the others wait in a queue (16), each client"); Out.Ln;
+  Out.String("    has 10 seconds. /queue n and /timeout s change them for one Serve;"); Out.Ln;
+  Out.String("    agena.SetQueueLen n and agena.SetTimeout s for the next Serve in this loksh."); Out.Ln;
+  Out.String("    Each request is logged: the client, the status and the URL."); Out.Ln; Out.Ln;
+  Out.String("  agena.Serve ... /listen addr   listens on addr instead of every address (IPv4 and"); Out.Ln;
+  Out.String("    IPv6); repeat it for several: 192.0.2.1, 2001:db8::1, [2001:db8::1]:1966, *:1966."); Out.Ln; Out.Ln;
+  Out.String("  agena.Serve /config agena.toml [port] [/listen addr]... [/n count] [/queue n] [/timeout s]"); Out.Ln;
+  Out.String("    serves several servers (virtual hosts) on one port; the host name of the"); Out.Ln;
+  Out.String("    handshake (SNI) chooses the server and its certificate, no name the first one."); Out.Ln;
+  Out.String("    agena.toml (names in UTF-8 are fine, index is optional):"); Out.Ln; Out.Ln;
+  Out.String("      port = 1965"); Out.Ln;
+  Out.String('      listen = ["*"]   # or ["192.0.2.1", "[2001:db8::1]:1966"]'); Out.Ln; Out.Ln;
+  Out.String("      [[server]]"); Out.Ln;
+  Out.String('      name  = "norayr.am"'); Out.Ln;
+  Out.String('      root  = "/srv/gemini/norayr.am/pub"'); Out.Ln;
+  Out.String('      cert  = "/srv/gemini/norayr.am/fullchain.pem"'); Out.Ln;
+  Out.String('      key   = "/srv/gemini/norayr.am/privkey.pem"'); Out.Ln;
+  Out.String('      index = "index.gmi"'); Out.Ln; Out.Ln;
+  Out.String("      [[server]]"); Out.Ln;
+  Out.String("      ..."); Out.Ln; Out.Ln;
+  Out.String("      [types]"); Out.Ln;
+  Out.String('      mp3 = "audio/mpeg"'); Out.Ln;
+  Out.String('      ogg = "audio/ogg"'); Out.Ln; Out.Ln;
+  Out.String("  The certificate needs an ECDSA P-256 key. A self-signed one, as Gemini clients"); Out.Ln;
+  Out.String("  accept it (trust on first use), is made with openssl:"); Out.Ln; Out.Ln;
+  Out.String("    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes"); Out.Ln;
+  Out.String("      -keyout key.pem -out cert.pem -days 3650 -subj /CN=example.org"); Out.Ln; Out.Ln;
+  Out.String("  Example:"); Out.Ln;
+  Out.String("    loksh agena.Serve /home/me/capsule cert.pem key.pem"); Out.Ln;
+  Out.String("    loksh gemini.Show gemini://localhost/"); Out.Ln
 END Help;
 
 BEGIN
